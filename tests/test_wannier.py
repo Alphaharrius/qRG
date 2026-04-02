@@ -12,7 +12,7 @@ from qten.symbolics.hilbert_space import HilbertSpace, U1Basis
 from qten.symbolics.state_space import IndexSpace, brillouin_zone
 from sympy import ImmutableDenseMatrix
 
-from qrg.wannier import projective_wannierization, wannier_projection
+from qrg.wannier import wannierize_k, wannierize_r
 
 
 @dataclass(frozen=True)
@@ -37,7 +37,7 @@ def _build_1d_spaces() -> tuple[Lattice, Any, HilbertSpace]:
     return lattice, k_space, bloch_space
 
 
-def test_wannier_projection_matches_explicit_crystal_seed_pipeline() -> None:
+def test_wannierize_r_matches_explicit_crystal_seed_pipeline() -> None:
     """Test local-seed projection matches explicit crystal-seed workflow."""
     # Minimal 1D lattice and Brillouin zone, similar to the notebook flow.
     _, k_space, bloch_space = _build_1d_spaces()
@@ -66,8 +66,8 @@ def test_wannier_projection_matches_explicit_crystal_seed_pipeline() -> None:
 
     # Notebook-like pathway: local seeds -> Fourier seeds -> projective wannierization.
     crystal_seeds = fourier_transform(k_space, bloch_space, local_space) @ local_seeds
-    expected = projective_wannierization(eigenvectors=eigenvectors, seeds=crystal_seeds)
-    actual = wannier_projection(eigenvectors=eigenvectors, seeds=local_seeds)
+    expected = wannierize_k(eigenvectors=eigenvectors, seeds=crystal_seeds)
+    actual = wannierize_r(eigenvectors=eigenvectors, seeds=local_seeds)
 
     assert actual.dims == expected.dims
     assert torch.allclose(actual.data, expected.data)
@@ -80,7 +80,7 @@ def test_wannier_projection_matches_explicit_crystal_seed_pipeline() -> None:
     )
 
 
-def test_projective_wannierization_rejects_non_rank3_tensors() -> None:
+def test_wannierize_k_rejects_non_rank3_tensors() -> None:
     """Test rank validation raises when inputs are not rank-3 tensors."""
     _, k_space, bloch_space = _build_1d_spaces()
     band_space = IndexSpace.linear(1)
@@ -95,7 +95,7 @@ def test_projective_wannierization_rejects_non_rank3_tensors() -> None:
         dims=(k_space, bloch_space, seed_space),
     )
     with pytest.raises(ValueError, match="rank-3"):
-        projective_wannierization(eigenvectors=eigenvectors_rank2, seeds=seeds_rank3)
+        wannierize_k(eigenvectors=eigenvectors_rank2, seeds=seeds_rank3)
 
     eigenvectors_rank3 = Tensor(
         data=torch.ones((k_space.dim, bloch_space.dim, band_space.dim), dtype=torch.complex128),
@@ -106,11 +106,11 @@ def test_projective_wannierization_rejects_non_rank3_tensors() -> None:
         dims=(bloch_space, seed_space),
     )
     with pytest.raises(ValueError, match="rank-3"):
-        projective_wannierization(eigenvectors=eigenvectors_rank3, seeds=seeds_rank2)
+        wannierize_k(eigenvectors=eigenvectors_rank3, seeds=seeds_rank2)
 
 
-def test_wannier_projection_rejects_non_momentum_first_dimension() -> None:
-    """Test wannier_projection rejects non-MomentumSpace first tensor dim."""
+def test_wannierize_r_rejects_non_momentum_first_dimension() -> None:
+    """Test wannierize_r rejects non-MomentumSpace first tensor dim."""
     _, k_space, bloch_space = _build_1d_spaces()
     band_space = IndexSpace.linear(1)
     seed_space = IndexSpace.linear(1)
@@ -125,16 +125,16 @@ def test_wannier_projection_rejects_non_momentum_first_dimension() -> None:
         dims=(bloch_space, seed_space),
     )
     with pytest.raises(TypeError, match="MomentumSpace"):
-        wannier_projection(eigenvectors=eigenvectors, seeds=local_seeds)
+        wannierize_r(eigenvectors=eigenvectors, seeds=local_seeds)
 
     good_eigenvectors = Tensor(
         data=torch.ones((k_space.dim, bloch_space.dim, band_space.dim), dtype=torch.complex128),
         dims=(k_space, bloch_space, band_space),
     )
-    wannier_projection(eigenvectors=good_eigenvectors, seeds=local_seeds)
+    wannierize_r(eigenvectors=good_eigenvectors, seeds=local_seeds)
 
 
-def test_projective_wannierization_warns_on_poor_overlap() -> None:
+def test_wannierize_k_warns_on_poor_overlap() -> None:
     """Test poor seed-band overlap emits the precarious projection warning."""
     _, k_space, bloch_space = _build_1d_spaces()
     band_space = IndexSpace.linear(1)
@@ -164,14 +164,14 @@ def test_projective_wannierization_warns_on_poor_overlap() -> None:
     )
 
     with pytest.warns(UserWarning, match="Precarious wannier projection"):
-        _ = projective_wannierization(
+        _ = wannierize_k(
             eigenvectors=eigenvectors,
             seeds=seeds,
             svd_threshold=1.0e-3,
         )
 
 
-def test_wannier_projection_projector_is_gauge_invariant() -> None:
+def test_wannierize_r_projector_is_gauge_invariant() -> None:
     """Test projector is invariant between equivalent seed construction routes."""
     _, k_space, bloch_space = _build_1d_spaces()
     band_space = IndexSpace.linear(1)
@@ -192,8 +192,8 @@ def test_wannier_projection_projector_is_gauge_invariant() -> None:
         dims=(bloch_space, seed_space),
     )
 
-    w_local = wannier_projection(eigenvectors=eigenvectors, seeds=local_seeds)
-    w_crystal = projective_wannierization(
+    w_local = wannierize_r(eigenvectors=eigenvectors, seeds=local_seeds)
+    w_crystal = wannierize_k(
         eigenvectors=eigenvectors,
         seeds=fourier_transform(k_space, bloch_space, bloch_space) @ local_seeds,
     )

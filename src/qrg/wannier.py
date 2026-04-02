@@ -8,7 +8,7 @@ from qten.symbolics.hilbert_space import HilbertSpace
 from qten.symbolics.state_space import MomentumSpace
 
 
-def projective_wannierization(
+def wannierize_k(
     eigenvectors: Tensor[Any], seeds: Tensor[Any], svd_threshold: float = 1e-1
 ) -> Tensor[Any]:
     """
@@ -60,7 +60,7 @@ def projective_wannierization(
     return cast(Tensor[Any], wannier_states)
 
 
-def wannier_projection(
+def wannierize_r(
     eigenvectors: Tensor[Any], seeds: Tensor[Any], svd_threshold: float = 1e-1
 ) -> Tensor[Any]:
     """
@@ -100,4 +100,4 @@ def wannier_projection(
     # f @ local_seeds -> (MomentumSpace, HilbertSpace_out, IndexSpace)
     crystal_seeds = f @ seeds
 
-    return projective_wannierization(eigenvectors, crystal_seeds, svd_threshold)
+    return wannierize_k(eigenvectors, crystal_seeds, svd_threshold)

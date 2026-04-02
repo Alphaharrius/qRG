@@ -63,7 +63,6 @@ torchvision = [
   { index = "pytorch-cu126", extra = "cu126" },
   { index = "pytorch-cu128", extra = "cu128" },
   { index = "pytorch-cu129", extra = "cu129" },
-  { index = "pytorch-cu130", extra = "cu130" },
   { index = "pytorch-cpu", extra = "cpu", marker = "sys_platform == 'linux'" },
   { index = "pypi", extra = "cpu", marker = "sys_platform != 'linux'" },
 ]

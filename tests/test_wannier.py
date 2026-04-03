@@ -12,7 +12,7 @@ from qten.symbolics.hilbert_space import HilbertSpace, U1Basis
 from qten.symbolics.state_space import IndexSpace, brillouin_zone
 from sympy import ImmutableDenseMatrix
 
-from qrg.wannier import wannierize_k, wannierize_r
+from qrg.wannier import projective_wannierization, wannierize_k, wannierize_r
 
 
 @dataclass(frozen=True)
@@ -201,3 +201,54 @@ def test_wannierize_r_projector_is_gauge_invariant() -> None:
     p_local = w_local @ w_local.h(-2, -1)
     p_crystal = w_crystal @ w_crystal.h(-2, -1)
     assert torch.allclose(p_local.data, p_crystal.data)
+
+
+def test_projective_wannierization_matches_explicit_paths() -> None:
+    """Test auto-dispatch reproduces explicit k-space and local-space APIs."""
+    _, k_space, bloch_space = _build_1d_spaces()
+    band_space = IndexSpace.linear(1)
+    seed_space = IndexSpace.linear(1)
+
+    eigenvectors = Tensor(
+        data=torch.tensor(
+            [
+                [[2**-0.5], [2**-0.5]],
+                [[2**-0.5], [-(2**-0.5)]],
+            ],
+            dtype=torch.complex128,
+        ),
+        dims=(k_space, bloch_space, band_space),
+    )
+    local_seeds = Tensor(
+        data=torch.tensor([[1.0], [0.0]], dtype=torch.complex128),
+        dims=(bloch_space, seed_space),
+    )
+    crystal_seeds = fourier_transform(k_space, bloch_space, bloch_space) @ local_seeds
+
+    assert torch.allclose(
+        projective_wannierization(eigenvectors=eigenvectors, seeds=local_seeds).data,
+        wannierize_r(eigenvectors=eigenvectors, seeds=local_seeds).data,
+    )
+    assert torch.allclose(
+        projective_wannierization(eigenvectors=eigenvectors, seeds=crystal_seeds).data,
+        wannierize_k(eigenvectors=eigenvectors, seeds=crystal_seeds).data,
+    )
+
+
+def test_projective_wannierization_rejects_invalid_seed_rank() -> None:
+    """Test auto-dispatch raises when seeds rank is neither 2 nor 3."""
+    _, k_space, bloch_space = _build_1d_spaces()
+    band_space = IndexSpace.linear(1)
+    seed_space = IndexSpace.linear(1)
+
+    eigenvectors = Tensor(
+        data=torch.ones((k_space.dim, bloch_space.dim, band_space.dim), dtype=torch.complex128),
+        dims=(k_space, bloch_space, band_space),
+    )
+    bad_seeds = Tensor(
+        data=torch.ones((seed_space.dim,), dtype=torch.complex128),
+        dims=(seed_space,),
+    )
+
+    with pytest.raises(ValueError, match="rank-2|rank-3"):
+        projective_wannierization(eigenvectors=eigenvectors, seeds=bad_seeds)

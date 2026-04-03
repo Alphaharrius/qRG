@@ -101,3 +101,37 @@ def wannierize_r(
     crystal_seeds = f @ seeds
 
     return wannierize_k(eigenvectors, crystal_seeds, svd_threshold)
+
+
+def projective_wannierization(
+    eigenvectors: Tensor[Any], seeds: Tensor[Any], svd_threshold: float = 1e-1
+) -> Tensor[Any]:
+    """
+    Perform projective wannierization with automatic seed-space dispatch.
+
+    Parameters
+    ----------
+    eigenvectors : Tensor
+        Target bands with shape `(MomentumSpace, HilbertSpace, IndexSpace)`.
+    seeds : Tensor
+        Either crystal-momentum seeds `(MomentumSpace, HilbertSpace, IndexSpace)`
+        or local real-space seeds `(HilbertSpace_local, IndexSpace)`.
+    svd_threshold : float
+        SVD warning threshold.
+
+    Returns
+    -------
+    Tensor
+        Wannierized states in momentum space.
+    """
+    if seeds.rank() == 3:
+        if not isinstance(seeds.dims[0], MomentumSpace):
+            raise TypeError("Rank-3 seeds must have MomentumSpace as the first dimension.")
+        return wannierize_k(eigenvectors=eigenvectors, seeds=seeds, svd_threshold=svd_threshold)
+
+    if seeds.rank() == 2:
+        if not isinstance(seeds.dims[0], HilbertSpace):
+            raise TypeError("Rank-2 seeds must have HilbertSpace as the first dimension.")
+        return wannierize_r(eigenvectors=eigenvectors, seeds=seeds, svd_threshold=svd_threshold)
+
+    raise ValueError("Seeds must be rank-2 (local seeds) or rank-3 (momentum seeds).")

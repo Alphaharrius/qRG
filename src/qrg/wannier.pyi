@@ -8,3 +8,6 @@ def wannierize_k(
 def wannierize_r(
     eigenvectors: Tensor[Any], seeds: Tensor[Any], svd_threshold: float = 1e-1
 ) -> Tensor[Any]: ...
+def projective_wannierization(
+    eigenvectors: Tensor[Any], seeds: Tensor[Any], svd_threshold: float = 1e-1
+) -> Tensor[Any]: ...

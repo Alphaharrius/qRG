@@ -135,3 +135,7 @@ files = ["src", "tests"]
 strict = true
 warn_unused_ignores = true
 disallow_any_generics = true
+
+[[tool.mypy.overrides]]
+module = ["sympy", "sympy.*"]
+ignore_missing_imports = true

@@ -14,7 +14,7 @@ authors = [
   { name = "eyjafjallac" },
 ]
 dependencies = [
-  "qten",
+  "qten>=0.4.0",
 ]
 [project.optional-dependencies]
 cpu = [
@@ -112,7 +112,7 @@ nb = [
   "ipykernel>=6.29.0",
   "jupyterlab>=4.2.0",
   "notebook>=7.2.0",
-  "qten-plots>=0.1.0",
+  "qten-plots>=0.3.0",
 ]
 
 [tool.pytest.ini_options]

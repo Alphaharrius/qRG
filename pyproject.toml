@@ -14,7 +14,7 @@ authors = [
   { name = "eyjafjallac" },
 ]
 dependencies = [
-  "qten>=0.4.1",
+  "qten>=0.4.2",
 ]
 [project.optional-dependencies]
 cpu = [

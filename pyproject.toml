@@ -14,6 +14,9 @@ authors = [
   { name = "eyjafjallac" },
 ]
 dependencies = [
+  "matplotlib>=3.10.7",
+  "networkx>=3.0",
+  "plotly>=6.5.0",
   "qten>=0.4.2",
 ]
 [project.optional-dependencies]

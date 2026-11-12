@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import Any, TypeVar
+
+F = TypeVar("F", bound=Callable[..., Any])
 
 _DIAGNOSTICS: dict[str, Callable[..., Any]] = {}
 
 
-def diagnostic(name: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+def diagnostic(name: str) -> Callable[[F], F]:
     """
     Register `fn` under `name`.
 
@@ -21,7 +23,7 @@ def diagnostic(name: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         If `name` is empty or already registered.
     """
 
-    def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
+    def decorator(fn: F) -> F:
         if name == "":
             raise ValueError("Diagnostic name must be a non-empty string")
         if name in _DIAGNOSTICS:

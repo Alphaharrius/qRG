@@ -267,3 +267,30 @@ def test_plot_tree_networkx_matplotlib_and_plotly() -> None:
     plotly_fig = cast(Any, root.plot("tree", backend="plotly"))
     assert plotly_fig.layout.title.text.startswith("Tree View:")
     assert len(plotly_fig.layout.annotations) == 3
+
+
+def test_grow_on_error_record_attaches_error_node() -> None:
+    def broken(node: Node, **_params: Any) -> Branch:
+        raise ValueError("singular value dropped to zero")
+
+    register("broken-pass", broken)
+    root = Node.new(name="root", operator=_tensor("root"))
+    try:
+        root.add_strat("wannier", Strategy("broken-pass", {"seed": "bad"}))
+        with pytest.raises(ValueError, match="singular value"):
+            root.grow("wannier")
+        failed_child = root.grow("wannier", on_error="record")
+        assert failed_child.failed is True
+        assert failed_child.path() == "wannier"
+        assert failed_child.step is not None
+        assert failed_child.step.kind == "error"
+        assert failed_child.info["error"]["type"] == "ValueError"
+        assert "singular value" in failed_child.info["error"]["message"]
+        with pytest.raises(RuntimeError, match="failed with ValueError"):
+            failed_child.operator()
+        assert root.history[-1]["kind"] == "error"
+        fig = cast(Any, failed_child.plot("tree"))
+        labels = [text.get_text() for text in fig.axes[0].texts]
+        assert any("ERROR: wannier" in label for label in labels)
+    finally:
+        unregister("broken-pass")

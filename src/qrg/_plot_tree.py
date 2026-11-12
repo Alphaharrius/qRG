@@ -37,6 +37,8 @@ def _tree_layout(root: Node) -> dict[int, tuple[float, float]]:
 
 def _node_tag(node: Node) -> str:
     step = node.step
+    if node.failed:
+        return f"ERROR: {step.method}" if step is not None else "ERROR"
     if step is None:
         return OPERATOR
     return step.method
@@ -47,7 +49,16 @@ def _wrap_node_label(label: str, tag: str, *, width: int) -> str:
     return "\n".join(textwrap.fill(line, width=width) for line in text.splitlines())
 
 
-def _tree_node_style(*, is_current: bool, is_root: bool) -> dict[str, object]:
+def _tree_node_style(
+    *, is_current: bool, is_root: bool, is_failed: bool = False
+) -> dict[str, object]:
+    if is_failed:
+        return {
+            "facecolor": "#fee2e2" if not is_current else "#b91c1c",
+            "edgecolor": "#991b1b",
+            "textcolor": "#7f1d1d" if not is_current else "white",
+            "linewidth": 2.4,
+        }
     if is_current:
         return {
             "facecolor": "#d1495b",
@@ -96,6 +107,7 @@ def _plot_node_tree_networkx(node: Node) -> nx.DiGraph:
             tag=_node_tag(current),
             is_current=current is node,
             is_root=current is root,
+            is_failed=current.failed,
         )
         for key, child in current.children.items():
             step = child.step
@@ -109,6 +121,7 @@ def _plot_node_tree_networkx(node: Node) -> nx.DiGraph:
                 tag=_node_tag(child),
                 is_current=child is node,
                 is_root=False,
+                is_failed=child.failed,
             )
             graph.add_edge(current_id, child_id, target=key, transform=step.transform)
             stack.append(child)
@@ -161,7 +174,11 @@ def _plot_node_tree_matplotlib(
 
     for node_id, attrs in graph.nodes(data=True):
         x, y = positions[node_id]
-        style = _tree_node_style(is_current=attrs["is_current"], is_root=attrs["is_root"])
+        style = _tree_node_style(
+            is_current=attrs["is_current"],
+            is_root=attrs["is_root"],
+            is_failed=attrs.get("is_failed", False),
+        )
         label = _wrap_node_label(attrs["label"], attrs["tag"], width=label_width)
         text = ax.text(
             x,
@@ -242,7 +259,11 @@ def _plot_node_tree_plotly(
     marker_line_width: list[float] = []
     for node_id, attrs in graph.nodes(data=True):
         x, y = positions[node_id]
-        style = _tree_node_style(is_current=attrs["is_current"], is_root=attrs["is_root"])
+        style = _tree_node_style(
+            is_current=attrs["is_current"],
+            is_root=attrs["is_root"],
+            is_failed=attrs.get("is_failed", False),
+        )
         label = _wrap_node_label(
             cast(str, attrs["label"]),
             cast(str, attrs["tag"]),

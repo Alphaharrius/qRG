@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from typing import Any
+from typing import Any, TypeVar
+
+F = TypeVar("F", bound=Callable[..., Any])
 
 _SEEDS: dict[str, Callable[..., Any]] = {}
 
 
-def seed(name: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+def seed(name: str) -> Callable[[F], F]:
     """
     Register `fn` under `name`.
 
@@ -18,7 +20,7 @@ def seed(name: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
         If `name` is empty or already registered.
     """
 
-    def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
+    def decorator(fn: F) -> F:
         if name == "":
             raise ValueError("Seed name must be a non-empty string")
         if name in _SEEDS:

@@ -13,6 +13,7 @@ such as a frozen Wannier function, live in the same mapping.
 from __future__ import annotations
 
 import re
+import traceback
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -327,7 +328,98 @@ class Node(Mapping[str, TensorLike], qten.plottings.Plottable):
 
     def operator(self) -> TensorLike:
         """Return the operator stored under ``"H"``."""
+        if OPERATOR not in self._data:
+            err = self._info.get("error")
+            if isinstance(err, Mapping):
+                raise RuntimeError(
+                    f"Node {self.path() or self.name!r} has no operator because it failed "
+                    f"with {err.get('type', 'Error')}: {err.get('message', '')}"
+                )
+            raise KeyError(OPERATOR)
         return self._data[OPERATOR]
+
+    @property
+    def failed(self) -> bool:
+        """Return ``True`` if this node failed or recorded an error."""
+        if "error" in self._info:
+            return True
+        return self._step is not None and self._step.kind == "error"
+
+    def record_error(self, exc: BaseException, *, stage: str | None = None) -> Self:
+        """Record `exc` on this node so reports display an ``ERROR`` block."""
+        tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        payload: dict[str, Any] = {
+            "type": type(exc).__name__,
+            "message": str(exc),
+            "traceback": tb,
+        }
+        if stage:
+            payload["stage"] = stage
+        self._info["error"] = payload
+        self._remember(
+            {
+                "kind": "error",
+                "path": self.path(),
+                "depth": self.depth(),
+                "stage": stage or "record_error",
+                "error": dict(payload),
+            }
+        )
+        return self
+
+    def fail(
+        self,
+        name: str,
+        exc: BaseException,
+        *,
+        impl: str = "external",
+        params: Mapping[str, Any] | None = None,
+    ) -> Node:
+        """Attach and return an ``ERROR`` child node representing a failed step."""
+        if name == "" or "." in name:
+            raise ValueError(f"Branch name {name!r} cannot be empty or contain '.'")
+        key = name
+        suffix = 2
+        while key in self._children:
+            key = f"{name}_{suffix}"
+            suffix += 1
+        tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        err_payload: dict[str, Any] = {
+            "type": type(exc).__name__,
+            "message": str(exc),
+            "traceback": tb,
+        }
+        stored_params = {} if params is None else dict(params)
+        child = Node(
+            name=name,
+            _data={},
+            _info={"error": err_payload},
+            _parent=self,
+            _key=key,
+            _step=Step(
+                method=key,
+                impl=impl,
+                params=stored_params,
+                transform=None,
+                kind="error",
+            ),
+            _children={},
+            _strats={},
+            _history=[],
+        )
+        self._children[key] = child
+        self._remember(
+            {
+                "kind": "error",
+                "path": child.path(),
+                "depth": child.depth(),
+                "strategy": key,
+                "impl": impl,
+                "params": stored_params,
+                "error": dict(err_payload),
+            }
+        )
+        return child
 
     def compute(self, name: str, f: Callable[[Node], TensorLike]) -> Self:
         """
@@ -645,7 +737,19 @@ class Node(Mapping[str, TensorLike], qten.plottings.Plottable):
         """Return whether this node has no children."""
         return not self._children
 
-    def grow(self, name: str) -> Node:
+    def report(self, path: str | Path, *, selected: Node | str | None = None) -> Path:
+        """
+        Write an HTML page for this tree and return the file path.
+
+        The page opens on the latest leaf by default, or on `selected` when
+        given. The link into each node is the step that created it, and the
+        node shows the tensors, tables, and plots recorded there.
+        """
+        from .report import write_report
+
+        return write_report(self, path, selected=selected)
+
+    def grow(self, name: str, *, on_error: str = "raise") -> Node:
         """
         Append the layer configured under `name` and return that new node.
 
@@ -657,6 +761,10 @@ class Node(Mapping[str, TensorLike], qten.plottings.Plottable):
         ----------
         name : str
             Name passed to [`add_strat`][qrg.tree.Node.add_strat].
+        on_error : {"raise", "record"}, default="raise"
+            When ``"record"``, any runtime exception raised by the strategy
+            implementation is captured into an ``ERROR`` child node instead of
+            aborting execution, so partial trees can still render a report.
 
         Returns
         -------
@@ -666,13 +774,15 @@ class Node(Mapping[str, TensorLike], qten.plottings.Plottable):
         Raises
         ------
         ValueError
-            If `name` was not configured, its implementation is missing, or
-            this node already has a child with that key.
+            If `name` was not configured, its implementation is missing,
+            `on_error` is invalid, or this node already has a child with that key.
         TypeError
             If the implementation does not return a :class:`Branch`.
         """
         from .strat import get_impl
 
+        if on_error not in {"raise", "record"}:
+            raise ValueError(f"on_error must be 'raise' or 'record', got {on_error!r}")
         try:
             strategy = self.root()._strats[name]
         except KeyError:
@@ -680,11 +790,22 @@ class Node(Mapping[str, TensorLike], qten.plottings.Plottable):
         if name in self._children:
             raise ValueError(f"Node {self.name!r} already has a branch {name!r}")
 
-        produced = get_impl(strategy.impl)(self, **dict(strategy.params))
-        if not isinstance(produced, Branch):
-            raise TypeError(
-                f"Strategy {strategy.impl!r} must return Branch, got {type(produced).__name__}"
-            )
+        impl_fn = get_impl(strategy.impl)
+        try:
+            if self.failed:
+                raise RuntimeError(
+                    f"Cannot grow {name!r} from failed parent node {self.path() or self.name!r}"
+                )
+            produced = impl_fn(self, **dict(strategy.params))
+            if not isinstance(produced, Branch):
+                raise TypeError(
+                    f"Strategy {strategy.impl!r} must return Branch, got {type(produced).__name__}"
+                )
+        except Exception as exc:
+            if on_error == "raise":
+                raise
+            return self.fail(name, exc, impl=strategy.impl, params=strategy.params)
+
         child = Node(
             name=name if produced.name is None else produced.name,
             _data=dict(produced.data),
@@ -758,6 +879,28 @@ class Node(Mapping[str, TensorLike], qten.plottings.Plottable):
             _strats={},
             _history=[],
         )
+
+    @staticmethod
+    def failed_root(
+        *,
+        name: str,
+        error: BaseException,
+        info: Mapping[str, Any] | None = None,
+    ) -> Node:
+        """Create a root ``ERROR`` node when initial operator construction fails."""
+        node = Node(
+            name=name,
+            _data={},
+            _info={} if info is None else dict(info),
+            _parent=None,
+            _key=None,
+            _step=None,
+            _children={},
+            _strats={},
+            _history=[],
+        )
+        node.record_error(error, stage="init")
+        return node
 
 
 def _export_figure(figure: object, path: str | Path) -> Path:

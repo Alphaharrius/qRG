@@ -17,7 +17,7 @@ dependencies = [
   "matplotlib>=3.10.7",
   "networkx>=3.0",
   "plotly>=6.5.0",
-  "qten>=0.4.2",
+  "qten>=0.5.0",
 ]
 [project.optional-dependencies]
 cpu = [
@@ -54,6 +54,7 @@ conflicts = [
 ]
 
 [tool.uv.sources]
+qten = { path = "../qten", editable = true }
 torch = [
   { index = "pytorch-cu126", extra = "cu126" },
   { index = "pytorch-cu128", extra = "cu128" },

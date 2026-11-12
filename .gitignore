@@ -216,3 +216,6 @@ __marimo__/
 
 # ipynb
 *.ipynb
+
+# Local model-specific runs. The library stays model-agnostic.
+examples/

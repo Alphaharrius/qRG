@@ -6,9 +6,10 @@ import textwrap
 from typing import Any, cast
 
 import matplotlib.patheffects as pe
-import matplotlib.pyplot as plt
 import networkx as nx  # type: ignore[import-untyped]
 import plotly.graph_objects as go  # type: ignore[import-untyped]
+from matplotlib.backends.backend_agg import FigureCanvasAgg
+from matplotlib.figure import Figure
 from matplotlib.patches import PathPatch
 from matplotlib.path import Path as MplPath
 
@@ -142,7 +143,9 @@ def _plot_node_tree_matplotlib(
 
     created_fig = False
     if ax is None:
-        fig, ax = plt.subplots(figsize=figsize)
+        fig = Figure(figsize=figsize)
+        FigureCanvasAgg(fig)
+        ax = fig.subplots()
         created_fig = True
     else:
         fig = ax.figure

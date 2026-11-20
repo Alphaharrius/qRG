@@ -8,10 +8,15 @@ function, so the tree can be pickled. Strategy implementations live in
 
 The operator on every node lives under ``"H"``. Extra tensors from that step,
 such as a frozen Wannier function, live in the same mapping.
+:meth:`Node.snapshot` is the picklable payload of one layer.
+:meth:`Node.save` writes that payload through :mod:`qten.utils.io`, and
+:meth:`Node.load` reads it back. A run checkpoint can store many snapshots
+in one file and rebuild a layer with :meth:`Node.from_snapshot`.
 """
 
 from __future__ import annotations
 
+import copyreg
 import re
 import traceback
 from collections.abc import Callable, Iterator, Mapping
@@ -19,7 +24,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Self
+from typing import Any, Self, cast
 
 import qten
 
@@ -277,11 +282,12 @@ class Node(Mapping[str, TensorLike], qten.plottings.Plottable):
     @property
     def history(self) -> tuple[Mapping[str, Any], ...]:
         """
-        Records of every grow and figure export on this tree.
+        Records of every grow, tensor save, and figure export on this tree.
 
-        Each entry has ``kind`` (``"grow"`` or ``"export"``), ``time``, and
-        ``depth``. Grow entries also keep the strategy name, implementation,
-        parameters, path, and the layer's non-tensor ``info``.
+        Each entry has ``kind`` (``"grow"``, ``"save"``, or ``"export"``),
+        ``time``, and ``depth``. Grow entries also keep the strategy name,
+        implementation, parameters, path, and the layer's non-tensor ``info``.
+        Save entries keep the :mod:`qten.utils.io` name and version.
         """
         return tuple(MappingProxyType(dict(entry)) for entry in self.root()._history)
 
@@ -749,6 +755,182 @@ class Node(Mapping[str, TensorLike], qten.plottings.Plottable):
 
         return write_report(self, path, selected=selected)
 
+    def save(self, name: str | None = None) -> int:
+        """
+        Pickle this node's tensors with :func:`qten.utils.io.save`.
+
+        The file holds the payload from :meth:`snapshot`: this layer only.
+        Parent links are not stored, so saving one cycle does not rewrite the
+        tensors above it. Reload the layer with :meth:`load`.
+
+        Call :func:`qten.utils.io.iodir` and :func:`qten.utils.io.env` before
+        the first save. Saving the same name again writes the next version.
+
+        Parameters
+        ----------
+        name : str, optional
+            Logical name under the active qten IO environment. Defaults to
+            this node's path, or its display name at the root. The name is
+            one directory segment and cannot contain a slash.
+
+        Returns
+        -------
+        int
+            Version assigned by :func:`qten.utils.io.save`.
+
+        Raises
+        ------
+        ValueError
+            If `name` is empty or contains a path separator.
+        RuntimeError
+            If no qten IO environment is active.
+        """
+        from qten.utils import io
+
+        store_name = _check_store_name((self.path() or self.name) if name is None else name)
+        version = int(io.save(self.snapshot(), store_name))
+        self._remember(
+            {
+                "kind": "save",
+                "path": self.path(),
+                "depth": self.depth(),
+                "name": store_name,
+                "version": version,
+            }
+        )
+        return version
+
+    def snapshot(self) -> dict[str, Any]:
+        """
+        Return the picklable payload of this layer.
+
+        The payload holds this layer's tensors, the edge transform, and
+        ``info`` with every ``plots`` entry removed. Parent links, children,
+        and strategies are omitted. :meth:`save` writes this object through
+        :mod:`qten.utils.io`. A run checkpoint can pickle the same object and
+        rebuild the layer with :meth:`from_snapshot`.
+        """
+        _ensure_frozendict_picklable()
+        step = self._step
+        return {
+            "format": _SNAPSHOT_FORMAT,
+            "name": self.name,
+            "path": self.path(),
+            "tensors": dict(self._data),
+            "transform": None if step is None else step.transform,
+            "step": None
+            if step is None
+            else {
+                "method": step.method,
+                "impl": step.impl,
+                "params": dict(step.params),
+                "kind": step.kind,
+            },
+            "info": _without_plots(self._info),
+        }
+
+    @classmethod
+    def from_snapshot(cls, payload: Mapping[str, Any], *, label: str | None = None) -> Node:
+        """
+        Rebuild a detached root from a payload returned by :meth:`snapshot`.
+
+        The tensors and step metadata match the saved layer.
+        ``info["saved_path"]`` is the path that layer had in the original tree.
+        The result has no parent, children, or strategies.
+
+        Parameters
+        ----------
+        payload : mapping
+            Object produced by :meth:`snapshot`.
+        label : str, optional
+            Name used in error messages. Defaults to the payload's ``name``.
+
+        Returns
+        -------
+        Node
+            A detached root holding the saved tensors.
+
+        Raises
+        ------
+        TypeError
+            If `payload` is not a qRG node snapshot.
+        """
+        shown = _snapshot_label(payload, label)
+        if not isinstance(payload, Mapping) or payload.get("format") != _SNAPSHOT_FORMAT:
+            raise TypeError(f"Stored object {shown!r} is not a qRG node snapshot")
+        tensors = payload.get("tensors", {})
+        if not isinstance(tensors, Mapping):
+            raise TypeError(f"Stored object {shown!r} has no tensor mapping")
+        info_raw = payload.get("info", {})
+        info: dict[str, Any] = dict(info_raw) if isinstance(info_raw, Mapping) else {}
+        saved_path = payload.get("path", "")
+        info["saved_path"] = "" if saved_path is None else str(saved_path)
+        step_raw = payload.get("step")
+        step: Step | None = None
+        if step_raw is not None:
+            if not isinstance(step_raw, Mapping):
+                raise TypeError(f"Stored object {shown!r} has an invalid step")
+            params = step_raw.get("params", {})
+            step = Step(
+                method=str(step_raw["method"]),
+                impl=str(step_raw["impl"]),
+                params=dict(params) if isinstance(params, Mapping) else {},
+                transform=cast(
+                    TensorLike | None,
+                    _repair_loaded_tensor(payload.get("transform")),
+                ),
+                kind=str(step_raw.get("kind", "isometry")),
+            )
+        stored_name = payload.get("name")
+        return cls(
+            name=str(stored_name or shown),
+            _data={
+                str(key): cast(TensorLike, _repair_loaded_tensor(value))
+                for key, value in tensors.items()
+            },
+            _info=info,
+            _parent=None,
+            _key=None,
+            _step=step,
+            _children={},
+            _strats={},
+            _history=[],
+        )
+
+    @classmethod
+    def load(cls, name: str, version: int = -1) -> Node:
+        """
+        Load a node written by :meth:`save`.
+
+        The result is a root. Its tensors and step metadata match the saved
+        layer, and ``info["saved_path"]`` is the path that layer had in the
+        original tree. Set the same qten IO directory and environment that
+        were active when the layer was saved.
+
+        Parameters
+        ----------
+        name : str
+            Logical name passed to :meth:`save`.
+        version : int, default=-1
+            Version to load. ``-1`` selects the latest version.
+
+        Returns
+        -------
+        Node
+            A detached root holding the saved tensors.
+
+        Raises
+        ------
+        TypeError
+            If the stored object is not a qRG node snapshot.
+        ValueError
+            If `name` is empty or contains a path separator.
+        """
+        from qten.utils import io
+
+        store_name = _check_store_name(name)
+        return cls.from_snapshot(io.load(store_name, version=version), label=store_name)
+
     def grow(self, name: str, *, on_error: str = "raise") -> Node:
         """
         Append the layer configured under `name` and return that new node.
@@ -901,6 +1083,100 @@ class Node(Mapping[str, TensorLike], qten.plottings.Plottable):
         )
         node.record_error(error, stage="init")
         return node
+
+
+_SNAPSHOT_FORMAT = "qrg.node"
+
+
+def _snapshot_label(payload: object, label: str | None) -> str:
+    """Return the name to show when a snapshot payload cannot be read."""
+    if label is not None:
+        return label
+    if isinstance(payload, Mapping):
+        stored = payload.get("name")
+        if isinstance(stored, str) and stored != "":
+            return stored
+    return "snapshot"
+
+
+def _ensure_frozendict_picklable() -> None:
+    """Register a pickle reducer for qten's slotted ``FrozenDict`` if needed."""
+    from qten.utils.collections_ext import FrozenDict
+
+    if FrozenDict not in copyreg.dispatch_table:
+        copyreg.pickle(FrozenDict, lambda mapping: (FrozenDict, (dict(mapping._items()),)))
+
+
+def _repair_loaded_tensor(tensor: Any) -> Any:
+    """Repair legacy unpickled rank-3 Bloch tensors whose ``FrozenDict`` unit cell was empty."""
+    dims = getattr(tensor, "dims", None)
+    if not isinstance(dims, tuple) or len(dims) != 3:
+        return tensor
+    from qten.geometries import Lattice, Offset, ReciprocalLattice
+    from qten.symbolics import HilbertSpace, MomentumSpace, U1Basis, brillouin_zone
+
+    if not isinstance(dims[0], MomentumSpace) or not isinstance(dims[1], HilbertSpace):
+        return tensor
+    if dims[1] is not dims[2] and dims[1] != dims[2]:
+        return tensor
+    try:
+        recip = dims[0].extract(ReciprocalLattice)
+        old_lat = recip.dual
+        _ = old_lat.unit_cell
+        return tensor
+    except AttributeError:
+        pass
+    except Exception:
+        return tensor
+
+    psis_raw = list(dims[1].structure.keys())
+    reps: list[Any] = []
+    seen_reps: set[tuple[Any, ...]] = set()
+    for psi in psis_raw:
+        try:
+            off = psi.irrep_of(Offset)
+        except Exception:
+            return tensor
+        key = tuple(off.rep)
+        if key not in seen_reps:
+            seen_reps.add(key)
+            reps.append(off.rep)
+    if not reps:
+        return tensor
+    clean_lat = Lattice(
+        basis=old_lat.basis,
+        boundaries=old_lat.boundaries,
+        unit_cell={f"r{idx}": rep for idx, rep in enumerate(reps)},
+    )
+    rebuilt_psis: list[U1Basis] = []
+    for psi in psis_raw:
+        new_parts = tuple(
+            Offset(rep=part.rep, space=clean_lat) if isinstance(part, Offset) else part
+            for part in psi.base
+        )
+        rebuilt_psis.append(U1Basis(psi.coef, new_parts))
+    clean_hilbert = HilbertSpace.new(rebuilt_psis)
+    return qten.Tensor(
+        data=tensor.data,
+        dims=(brillouin_zone(clean_lat.dual), clean_hilbert, clean_hilbert),
+    )
+
+
+def _without_plots(value: Any) -> Any:
+    """Copy records, dropping plot payloads that are not needed to re-evaluate."""
+    if isinstance(value, Mapping):
+        return {str(key): _without_plots(item) for key, item in value.items() if key != "plots"}
+    if isinstance(value, list):
+        return [_without_plots(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_without_plots(item) for item in value)
+    return value
+
+
+def _check_store_name(name: str) -> str:
+    if name == "" or "/" in name or "\\" in name:
+        raise ValueError(f"Store name {name!r} must be one path segment, without '/' or '\\'")
+    return name
 
 
 def _export_figure(figure: object, path: str | Path) -> Path:

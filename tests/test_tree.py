@@ -226,6 +226,107 @@ def test_trace_accepts_absolute_and_relative_layer_counts() -> None:
         root.trace(1)
 
 
+def test_save_writes_one_layer_for_later_evaluation(tmp_path: Path) -> None:
+    from qten.utils import io
+
+    io._io_dir = None
+    io._all_env = None
+    io._current_env = None
+    io.iodir(tmp_path)
+    io.env("diamond-rg")
+    try:
+        root = Node.new(name="diamond", operator=_tensor("primitive"))
+        root.record("plots", {"band": lambda: None})
+        root.add_strat(
+            "blocking",
+            _strat({"label": "folded", "kind": "blocking", "factor": 3}),
+        )
+        root.add_strat("wannier", _strat({"label": "courier", "edge": "Wc"}))
+        blocked = root.grow("blocking")
+        blocked.record("plots", {"band": lambda: None})
+        blocked.record("frozen", {"z2": (0, 0, 0, 0), "plots": {"nk": lambda: None}})
+        # An unpicklable parent record must not be pulled in with the child.
+        root.record("closure", lambda: None)
+
+        version = blocked.save()
+        again = blocked.save()
+        restored = Node.load("blocking", version=version)
+        latest = Node.load("blocking")
+
+        assert version == 1
+        assert again == 2
+        assert restored.is_root() is True
+        assert restored.info["saved_path"] == "blocking"
+        assert "plots" not in restored.info
+        assert restored.info["frozen"] == {"z2": (0, 0, 0, 0)}
+        assert cast(FakeTensor, restored.operator()).name == "folded"
+        assert restored.step is not None
+        assert restored.step.kind == "blocking"
+        assert restored.step.params["factor"] == 3
+        assert restored.step.transform is None
+        assert cast(FakeTensor, latest.operator()).name == "folded"
+        assert [entry["kind"] for entry in root.history] == ["grow", "save", "save"]
+        assert root.history[-1]["name"] == "blocking"
+        assert root.history[-1]["version"] == 2
+
+        courier = blocked.grow("wannier")
+        courier.save()
+        loaded = Node.load("blocking.wannier")
+        assert loaded.path() == ""
+        assert loaded.info["saved_path"] == "blocking.wannier"
+        assert cast(FakeTensor, loaded.operator()).name == "courier"
+        assert loaded.step is not None
+        assert cast(FakeTensor, loaded.step.transform).name == "Wc"
+
+        with pytest.raises(ValueError, match="path segment"):
+            root.save("cycle/1")
+    finally:
+        io._io_dir = None
+        io._all_env = None
+        io._current_env = None
+
+
+def test_snapshot_roundtrip_drops_plots_and_restores_the_step() -> None:
+    root = Node.new(name="diamond", operator=_tensor("primitive"))
+    root.record("plots", {"band": lambda: None})
+    root.add_strat("blocking", _strat({"label": "folded", "kind": "blocking", "factor": 3}))
+    blocked = root.grow("blocking")
+    blocked.record("frozen", {"z2": (0, 0, 0, 0), "plots": {"nk": lambda: None}})
+
+    payload = pickle.loads(pickle.dumps(blocked.snapshot()))
+    restored = Node.from_snapshot(payload)
+
+    assert restored.is_root() is True
+    assert restored.path() == ""
+    assert restored.info["saved_path"] == "blocking"
+    assert "plots" not in restored.info
+    assert restored.info["frozen"] == {"z2": (0, 0, 0, 0)}
+    assert cast(FakeTensor, restored.operator()).name == "folded"
+    assert restored.step is not None
+    assert restored.step.kind == "blocking"
+    assert restored.step.params["factor"] == 3
+    assert restored.step.transform is None
+    with pytest.raises(TypeError, match="not a qRG node snapshot"):
+        Node.from_snapshot({"format": "other"})
+
+
+def test_save_requires_an_io_environment(tmp_path: Path) -> None:
+    from qten.utils import io
+
+    io._io_dir = None
+    io._all_env = None
+    io._current_env = None
+    io.iodir(tmp_path)
+    root = Node.new(name="diamond", operator=_tensor("primitive"))
+    try:
+        with pytest.raises(RuntimeError, match="environment"):
+            root.save()
+    finally:
+        io._io_dir = None
+        io._all_env = None
+        io._current_env = None
+
+
 def test_history_records_grows_and_exported_figures(tmp_path: Path) -> None:
     root = Node.new(name="root", operator=_tensor("root"))
     root.add_strat("blocking", _strat({"label": "folded", "kind": "blocking", "factor": 3}))
